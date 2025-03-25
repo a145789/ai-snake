@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>贪吃蛇AI训练系统</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js"></script>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 20px;
+      background-color: #f5f5f5;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    }
+
+    .game-area {
+      display: flex;
+      justify-content: space-around;
+      flex-wrap: wrap;
+      margin: 20px 0;
+    }
+
+    .game-container {
+      margin: 10px;
+    }
+
+    canvas {
+      border: 2px solid #333;
+      background-color: #fff;
+    }
+
+    .controls {
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #eee;
+      border-radius: 5px;
+    }
+
+    button {
+      padding: 10px 15px;
+      margin: 0 5px;
+      cursor: pointer;
+      background-color: #4caf50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 16px;
+      transition: background-color 0.3s;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+
+    #status {
+      margin: 15px 0;
+      padding: 10px;
+      background-color: #e9f7ef;
+      border-radius: 5px;
+      min-height: 20px;
+    }
+
+    .progress-container {
+      width: 100%;
+      background-color: #ddd;
+      border-radius: 5px;
+      margin: 15px 0;
+    }
+
+    #progressBar {
+      width: 0%;
+      height: 30px;
+      background-color: #4caf50;
+      border-radius: 5px;
+      text-align: center;
+      line-height: 30px;
+      color: white;
+      transition: width 0.3s;
+    }
+
+    .stats {
+      display: flex;
+      justify-content: space-around;
+      margin: 15px 0;
+      flex-wrap: wrap;
+    }
+
+    .stat-box {
+      background-color: #f8f9fa;
+      padding: 10px 15px;
+      border-radius: 5px;
+      min-width: 120px;
+      margin: 5px;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.05);
+    }
+
+    h2,
+    h3 {
+      color: #2c3e50;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>贪吃蛇AI训练系统</h1>
+    <p>使用TensorFlow.js实现的强化学习贪吃蛇AI</p>
+
+    <div class="controls">
+      <button id="manualBtn">手动模式</button>
+      <button id="aiBtn">AI演示</button>
+      <button id="trainBtn">训练AI (500回合)</button>
+      <button id="stopTrainBtn" disabled>停止训练</button>
+    </div>
+
+    <div class="progress-container">
+      <div id="progressBar">0%</div>
+    </div>
+
+    <div id="status">准备就绪。请选择模式开始...</div>
+
+    <div class="stats">
+      <div class="stat-box">
+        <h3>当前分数</h3>
+        <p id="currentScore">0</p>
+      </div>
+      <div class="stat-box">
+        <h3>最高分数</h3>
+        <p id="highScore">0</p>
+      </div>
+      <div class="stat-box">
+        <h3>训练回合</h3>
+        <p id="episodeCount">0/500</p>
+      </div>
+      <div class="stat-box">
+        <h3>平均分数</h3>
+        <p id="avgScore">0</p>
+      </div>
+    </div>
+
+    <div class="game-area">
+      <div class="game-container">
+        <h3>主游戏画面</h3>
+        <canvas id="mainCanvas" width="400" height="400"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==================== 抽象贪吃蛇游戏类 ====================
+    class SnakeGame {
+      constructor(config) {
+        if (new.target === SnakeGame) {
+          throw new Error(
+            'SnakeGame is an abstract class and cannot be instantiated directly.'
+          );
+        }
+
+        this.width = config.width || 20;
+        this.height = config.height || 20;
+
+        this.snake = [
+          { x: Math.floor(this.width / 2), y: Math.floor(this.height / 2) },
+        ];
+        this.direction = { x: 0, y: 0 };
+        this.food = this.generateFood();
+        this.score = 0;
+        this.isGameOver = false;
+        this.onUpdate = null;
+
+        this.directionMap = {
+          up: { x: 0, y: -1 },
+          right: { x: 1, y: 0 },
+          down: { x: 0, y: 1 },
+          left: { x: -1, y: 0 },
+        };
+
+        this.reset();
+      }
+
+      reset() {
+        this.snake = [
+          { x: Math.floor(this.width / 2), y: Math.floor(this.height / 2) },
+        ];
+        this.direction = { x: 0, y: 0 };
+        this.food = this.generateFood();
+        this.score = 0;
+        this.isGameOver = false;
+
+        if (this.onUpdate) {
+          this.onUpdate(this.getGameState());
+        }
+      }
+
+      generateFood() {
+        let newFood;
+        const availableCells = [];
+
+        for (let x = 0; x < this.width; x++) {
+          for (let y = 0; y < this.height; y++) {
+            if (
+              !this.snake.some(
+                (segment) => segment.x === x && segment.y === y
+              )
+            ) {
+              availableCells.push({ x, y });
+            }
+          }
+        }
+
+        if (availableCells.length === 0) {
+          return null;
+        }
+
+        return availableCells[
+          Math.floor(Math.random() * availableCells.length)
+        ];
+      }
+
+      changeDirection(direction) {
+        const newDirection = this.directionMap[direction];
+        if (!newDirection) return;
+
+        if (
+          newDirection.x !== -this.direction.x ||
+          newDirection.y !== -this.direction.y
+        ) {
+          this.direction = newDirection;
+        }
+      }
+
+      update() {
+        if (
+          this.isGameOver ||
+          (this.direction.x === 0 && this.direction.y === 0)
+        ) {
+          return false;
+        }
+
+        const head = {
+          x: this.snake[0].x + this.direction.x,
+          y: this.snake[0].y + this.direction.y,
+        };
+
+        this.snake.unshift(head);
+
+        if (head.x === this.food?.x && head.y === this.food?.y) {
+          this.score += 10;
+          this.food = this.generateFood();
+
+          if (!this.food) {
+            this.isGameOver = true;
+            if (this.onUpdate) {
+              this.onUpdate(this.getGameState());
+            }
+            return false;
+          }
+        } else {
+          this.snake.pop();
+        }
+
+        if (
+          head.x < 0 ||
+          head.x >= this.width ||
+          head.y < 0 ||
+          head.y >= this.height ||
+          this.snake
+            .slice(1)
+            .some((segment) => segment.x === head.x && segment.y === head.y)
+        ) {
+          this.isGameOver = true;
+        }
+
+        if (this.onUpdate) {
+          this.onUpdate(this.getGameState());
+        }
+
+        return !this.isGameOver;
+      }
+
+      getGameState() {
+        const head = this.snake[0];
+
+        // 计算8个方向的危险程度
+        const directions = [
+          { x: 0, y: -1 }, // 上
+          { x: 1, y: -1 }, // 右上
+          { x: 1, y: 0 }, // 右
+          { x: 1, y: 1 }, // 右下
+          { x: 0, y: 1 }, // 下
+          { x: -1, y: 1 }, // 左下
+          { x: -1, y: 0 }, // 左
+          { x: -1, y: -1 }, // 左上
+        ];
+
+        const danger = directions.map((dir) =>
+          this.checkDirectionDanger(head, dir) ? 1 : 0
+        );
+
+        const foodLeft = this.food?.x < head.x;
+        const foodRight = this.food?.x > head.x;
+        const foodUp = this.food?.y < head.y;
+        const foodDown = this.food?.y > head.y;
+
+        const movingLeft = this.direction.x === -1;
+        const movingRight = this.direction.x === 1;
+        const movingUp = this.direction.y === -1;
+        const movingDown = this.direction.y === 1;
+
+        // 计算食物相对方向
+        let foodDirectionX = 0;
+        let foodDirectionY = 0;
+        if (this.food) {
+          foodDirectionX = this.food.x - head.x;
+          foodDirectionY = this.food.y - head.y;
+        }
+
+        return {
+          snake: [...this.snake],
+          food: this.food ? { ...this.food } : null,
+          direction: { ...this.direction },
+          score: this.score,
+          isGameOver: this.isGameOver,
+
+          stateArray: [
+            ...danger, // 8个方向的危险情况
+            movingLeft ? 1 : 0,
+            movingRight ? 1 : 0,
+            movingUp ? 1 : 0,
+            movingDown ? 1 : 0,
+            foodLeft ? 1 : 0,
+            foodRight ? 1 : 0,
+            foodUp ? 1 : 0,
+            foodDown ? 1 : 0,
+            this.food ? Math.sign(foodDirectionX) : 0,
+            this.food ? Math.sign(foodDirectionY) : 0,
+            this.snake.length / 100, // 归一化蛇的长度
+          ],
+
+          headPosition: { ...head },
+          foodPosition: this.food ? { ...this.food } : null,
+        };
+      }
+
+      checkDirectionDanger(position, direction) {
+        const newPos = {
+          x: position.x + direction.x,
+          y: position.y + direction.y,
+        };
+
+        if (
+          newPos.x < 0 ||
+          newPos.x >= this.width ||
+          newPos.y < 0 ||
+          newPos.y >= this.height
+        ) {
+          return true;
+        }
+
+        return this.snake.some(
+          (segment) => segment.x === newPos.x && segment.y === newPos.y
+        );
+      }
+
+      getReward() {
+        if (this.isGameOver) {
+          return -20; // 增加游戏结束的惩罚
+        }
+
+        const state = this.getGameState();
+        const head = state.headPosition;
+        const food = state.foodPosition;
+
+        if (!food) return 0;
+
+        const prevDistance =
+          Math.abs(head.x - food.x) + Math.abs(head.y - food.y);
+
+        if (head.x === food.x && head.y === food.y) {
+          return 15 + this.snake.length * 0.5; // 根据蛇的长度增加奖励
+        }
+
+        // 更精细的距离奖励
+        const distanceReward = prevDistance < this.prevDistance ? 0.5 : -0.3;
+
+        // 存活奖励
+        const survivalReward = 0.1;
+
+        return distanceReward + survivalReward;
+      }
+
+      start(speed = 200) {
+        if (this.gameInterval) {
+          clearInterval(this.gameInterval);
+        }
+
+        this.gameInterval = setInterval(() => {
+          if (!this.update()) {
+            clearInterval(this.gameInterval);
+          }
+        }, speed);
+      }
+
+      stop() {
+        if (this.gameInterval) {
+          clearInterval(this.gameInterval);
+          this.gameInterval = null;
+        }
+      }
+
+      render() {
+        throw new Error("Method 'render()' must be implemented.");
+      }
+
+      renderGameOver() {
+        throw new Error("Method 'renderGameOver()' must be implemented.");
+      }
+    }
+
+    // ==================== Canvas贪吃蛇游戏实现 ====================
+    class CanvasSnakeGame extends SnakeGame {
+      constructor(config) {
+        super(config);
+
+        this.canvas = config.canvas;
+        this.ctx = this.canvas.getContext('2d');
+        this.cellSize = config.cellSize || 20;
+
+        this.canvas.width = this.width * this.cellSize;
+        this.canvas.height = this.height * this.cellSize;
+
+        this.colors = {
+          background: '#f0f0f0',
+          snakeHead: '#2e7d32',
+          snakeBody: '#4caf50',
+          food: '#d32f2f',
+          grid: '#e0e0e0',
+          text: '#333333',
+        };
+
+        if (config.handleInput !== false) {
+          document.addEventListener('keydown', (e) => this.handleKeyDown(e));
+        }
+      }
+
+      render() {
+        this.clearCanvas();
+        this.drawGrid();
+        this.drawFood();
+        this.drawSnake();
+        this.drawScore();
+      }
+
+      renderGameOver() {
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        this.ctx.fillStyle = this.colors.text;
+        this.ctx.font = '24px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(
+          this.food ? '游戏结束!' : '你赢了!',
+          this.canvas.width / 2,
+          this.canvas.height / 2 - 30
+        );
+
+        this.ctx.font = '18px Arial';
+        this.ctx.fillText(
+          `最终分数: ${this.score}`,
+          this.canvas.width / 2,
+          this.canvas.height / 2 + 10
+        );
+
+        this.ctx.fillText(
+          '按空格键重新开始',
+          this.canvas.width / 2,
+          this.canvas.height / 2 + 40
+        );
+      }
+
+      clearCanvas() {
+        this.ctx.fillStyle = this.colors.background;
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+
+      drawGrid() {
+        this.ctx.strokeStyle = this.colors.grid;
+        this.ctx.lineWidth = 0.5;
+
+        for (let x = 0; x <= this.canvas.width; x += this.cellSize) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(x, 0);
+          this.ctx.lineTo(x, this.canvas.height);
+          this.ctx.stroke();
+        }
+
+        for (let y = 0; y <= this.canvas.height; y += this.cellSize) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(0, y);
+          this.ctx.lineTo(this.canvas.width, y);
+          this.ctx.stroke();
+        }
+      }
+
+      drawSnake() {
+        this.snake.forEach((segment, index) => {
+          const isHead = index === 0;
+
+          this.ctx.fillStyle = isHead
+            ? this.colors.snakeHead
+            : this.colors.snakeBody;
+          this.ctx.fillRect(
+            segment.x * this.cellSize,
+            segment.y * this.cellSize,
+            this.cellSize,
+            this.cellSize
+          );
+
+          this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+          this.ctx.strokeRect(
+            segment.x * this.cellSize,
+            segment.y * this.cellSize,
+            this.cellSize,
+            this.cellSize
+          );
+        });
+      }
+
+      drawFood() {
+        if (!this.food) return;
+
+        this.ctx.fillStyle = this.colors.food;
+        this.ctx.beginPath();
+        this.ctx.arc(
+          (this.food.x + 0.5) * this.cellSize,
+          (this.food.y + 0.5) * this.cellSize,
+          this.cellSize / 2 - 2,
+          0,
+          Math.PI * 2
+        );
+        this.ctx.fill();
+      }
+
+      drawScore() {
+        this.ctx.fillStyle = this.colors.text;
+        this.ctx.font = '16px Arial';
+        this.ctx.textAlign = 'left';
+        this.ctx.fillText(`分数: ${this.score}`, 10, 20);
+      }
+
+      handleKeyDown(e) {
+        if (this.isGameOver && e.code === 'Space') {
+          this.reset();
+          this.start();
+          return;
+        }
+
+        switch (e.key) {
+          case 'ArrowUp':
+            this.changeDirection('up');
+            break;
+          case 'ArrowRight':
+            this.changeDirection('right');
+            break;
+          case 'ArrowDown':
+            this.changeDirection('down');
+            break;
+          case 'ArrowLeft':
+            this.changeDirection('left');
+            break;
+        }
+      }
+    }
+
+    // ==================== 贪吃蛇AI控制器 ====================
+    class SnakeAI {
+      constructor(config) {
+        this.gridWidth = config.gridWidth;
+        this.gridHeight = config.gridHeight;
+        this.getStateCallback = config.getStateCallback;
+        this.onActionCallback = config.onActionCallback;
+
+        this.modelParams = {
+          learningRate: 0.0005,
+          hiddenUnits: 256,
+          ...config.modelParams,
+        };
+
+        this.model = null;
+        this.targetModel = null;
+        this.isTraining = false;
+        this.shouldStopTraining = false;
+        this.memory = [];
+        this.memoryCapacity = 20000;
+        this.batchSize = 128;
+        this.updateTargetEvery = 100;
+
+        this.initModel();
+      }
+
+      initModel() {
+        // Main model
+        this.model = tf.sequential();
+        this.model.add(
+          tf.layers.dense({
+            units: this.modelParams.hiddenUnits,
+            inputShape: [19], // Updated to 19 features
+            activation: 'relu',
+          })
+        );
+        this.model.add(
+          tf.layers.dense({
+            units: this.modelParams.hiddenUnits,
+            activation: 'relu',
+          })
+        );
+        this.model.add(
+          tf.layers.dense({
+            units: 4,
+            activation: 'linear',
+          })
+        );
+        this.model.compile({
+          optimizer: tf.train.adam(this.modelParams.learningRate),
+          loss: 'meanSquaredError',
+        });
+
+        // Target model
+        this.targetModel = tf.sequential();
+        this.targetModel.add(
+          tf.layers.dense({
+            units: this.modelParams.hiddenUnits,
+            inputShape: [19], // Updated to 19 features
+            activation: 'relu',
+          })
+        );
+        this.targetModel.add(
+          tf.layers.dense({
+            units: this.modelParams.hiddenUnits,
+            activation: 'relu',
+          })
+        );
+        this.targetModel.add(
+          tf.layers.dense({
+            units: 4,
+            activation: 'linear',
+          })
+        );
+        this.targetModel.compile({
+          optimizer: tf.train.adam(this.modelParams.learningRate),
+          loss: 'meanSquaredError',
+        });
+
+        this.updateTargetNetwork();
+      }
+
+      updateTargetNetwork() {
+        const weights = this.model.getWeights();
+        this.targetModel.setWeights(weights);
+      }
+
+      getState() {
+        return this.getStateCallback();
+      }
+
+      async predictAction(explorationRate = 0) {
+        const state = this.getState();
+        const input = tf.tensor2d([state]);
+
+        let actions;
+        if (Math.random() < explorationRate) {
+          // Random exploration
+          actions = Array(4)
+            .fill(0)
+            .map(() => Math.random() * 2 - 1);
+        } else {
+          // Model prediction
+          const prediction = this.model.predict(input);
+          actions = await prediction.data();
+          prediction.dispose();
+        }
+
+        input.dispose();
+        return actions.indexOf(Math.max(...actions));
+      }
+
+      async step() {
+        const action = await this.predictAction(0.1);
+        this.onActionCallback(action);
+      }
+
+      async train(trainingParams = {}) {
+        const params = {
+          episodes: 500,
+          batchSize: this.batchSize,
+          explorationRate: 0.5,
+          minExplorationRate: 0.1,
+          explorationDecay: 0.995,
+          discountFactor: 0.95,
+          maxStepsPerEpisode: 1000,
+          updateInterval: 10,
+          ...trainingParams,
+        };
+
+        // Pre-fill memory
+        while (this.memory.length < Math.min(params.batchSize, 1000)) {
+          const randomAction = Math.floor(Math.random() * 4);
+          const { reward, nextState, isDone } =
+            this.onActionCallback(randomAction);
+          this.remember(
+            this.getState(),
+            randomAction,
+            reward,
+            nextState,
+            isDone
+          );
+        }
+
+        this.isTraining = true;
+        this.shouldStopTraining = false;
+
+        let totalScores = 0;
+        let highScore = 0;
+        let scores = [];
+        let avgScore = 0;
+
+        for (let episode = 0; episode < params.episodes; episode++) {
+          if (this.shouldStopTraining) {
+            break;
+          }
+
+          let step = 0;
+          let done = false;
+          let currentExplorationRate = Math.max(
+            params.minExplorationRate,
+            params.explorationRate *
+            Math.pow(params.explorationDecay, episode)
+          );
+
+          this.onActionCallback('reset');
+
+          while (!done && step < params.maxStepsPerEpisode) {
+            step++;
+
+            const state = this.getState();
+            const action = await this.predictAction(currentExplorationRate);
+
+            const { reward, nextState, isDone } =
+              this.onActionCallback(action);
+
+            this.remember(state, action, reward, nextState, isDone);
+
+            if (this.memory.length > params.batchSize) {
+              await this.replay(params.batchSize, params.discountFactor);
+            }
+
+            done = isDone;
+          }
+
+          // Update target network periodically
+          if (episode % this.updateTargetEvery === 0) {
+            this.updateTargetNetwork();
+          }
+
+          // Update statistics
+          const currentScore = this.onActionCallback('get-score').score;
+          scores.push(currentScore);
+          totalScores += currentScore;
+
+          if (currentScore > highScore) {
+            highScore = currentScore;
+          }
+
+          if (scores.length > 100) {
+            scores.shift();
+          }
+
+          avgScore = totalScores / (episode + 1);
+
+          // Update UI
+          updateTrainingProgress(
+            episode + 1,
+            params.episodes,
+            currentScore,
+            highScore,
+            avgScore
+          );
+
+          // Periodic status update
+          if (episode % params.updateInterval === 0) {
+            document.getElementById(
+              'status'
+            ).textContent = `Training... Episode: ${episode + 1}/${params.episodes
+              } | Current Score: ${currentScore} | High Score: ${highScore} | Exploration Rate: ${currentExplorationRate.toFixed(
+                2
+              )}`;
+            await tf.nextFrame();
+          }
+        }
+
+        this.isTraining = false;
+        document.getElementById(
+          'status'
+        ).textContent = `Training Complete! Final High Score: ${highScore} | Average Score: ${avgScore.toFixed(
+          1
+        )}`;
+      }
+
+      stopTraining() {
+        this.shouldStopTraining = true;
+      }
+
+      remember(state, action, reward, nextState, done) {
+        this.memory.push({ state, action, reward, nextState, done });
+        if (this.memory.length > this.memoryCapacity) {
+          this.memory.shift();
+        }
+      }
+
+      async replay(batchSize, discountFactor) {
+        if (this.memory.length < batchSize) return;
+
+        const batch = [];
+        for (let i = 0; i < batchSize; i++) {
+          const randomIndex = Math.floor(Math.random() * this.memory.length);
+          batch.push(this.memory[randomIndex]);
+        }
+
+        const states = batch.map((item) => item.state);
+        const actions = batch.map((item) => item.action);
+        const rewards = batch.map((item) => item.reward);
+        const nextStates = batch.map((item) => item.nextState);
+        const dones = batch.map((item) => item.done);
+
+        // Use 19 for the state dimension
+        const nextQs = this.targetModel.predict(
+          tf.tensor2d(nextStates, [batchSize, 19])
+        );
+        const nextQValues = await nextQs.array();
+        nextQs.dispose();
+
+        const targets = [];
+        for (let i = 0; i < batchSize; i++) {
+          let target = rewards[i]; // Changed from const to let
+          if (!dones[i]) {
+            target += discountFactor * Math.max(...nextQValues[i]);
+          }
+          targets.push(target);
+        }
+
+        const currentQs = this.model.predict(
+          tf.tensor2d(states, [batchSize, 19])
+        );
+        const currentQValues = await currentQs.array();
+        currentQs.dispose();
+
+        const updatedQValues = currentQValues.map((qValues, index) => {
+          const updated = [...qValues];
+          updated[actions[index]] = targets[index];
+          return updated;
+        });
+
+        const xs = tf.tensor2d(states, [batchSize, 19]);
+        const ys = tf.tensor2d(updatedQValues, [batchSize, 4]);
+
+        await this.model.fit(xs, ys, {
+          epochs: 1,
+          batchSize: 32,
+          verbose: 0,
+        });
+
+        xs.dispose();
+        ys.dispose();
+      }
+
+      async saveModel(name) {
+        await this.model.save(`indexeddb://${name}`);
+      }
+
+      async loadModel(name) {
+        this.model = await tf.loadLayersModel(`indexeddb://${name}`);
+      }
+    }
+
+    // ==================== 主程序 ====================
+    // 初始化游戏
+    const canvas = document.getElementById('mainCanvas');
+    const game = new CanvasSnakeGame({
+      width: 20,
+      height: 20,
+      canvas: canvas,
+      cellSize: 20,
+      handleInput: true,
+    });
+
+    // 初始化AI
+    const ai = new SnakeAI({
+      gridWidth: 20,
+      gridHeight: 20,
+      getStateCallback: () => game.getGameState().stateArray,
+      onActionCallback: (action) => {
+        if (action === 'reset') {
+          game.reset();
+          return {
+            reward: 0,
+            nextState: game.getGameState().stateArray,
+            isDone: false,
+            score: 0,
+          };
+        }
+
+        if (action === 'get-score') {
+          return {
+            score: game.score,
+          };
+        }
+
+        const prevState = game.getGameState();
+        const prevDistance = prevState.foodPosition
+          ? Math.abs(prevState.headPosition.x - prevState.foodPosition.x) +
+          Math.abs(prevState.headPosition.y - prevState.foodPosition.y)
+          : 0;
+
+        switch (action) {
+          case 0:
+            game.changeDirection('up');
+            break;
+          case 1:
+            game.changeDirection('right');
+            break;
+          case 2:
+            game.changeDirection('down');
+            break;
+          case 3:
+            game.changeDirection('left');
+            break;
+        }
+
+        const isDone = !game.update();
+        const currentState = game.getGameState();
+        let reward = 0;
+
+        if (isDone) {
+          reward = -20; // 游戏结束惩罚
+        } else if (
+          currentState.food &&
+          currentState.headPosition.x === currentState.food.x &&
+          currentState.headPosition.y === currentState.food.y
+        ) {
+          // 吃到食物的奖励
+          reward = 15 + game.snake.length * 0.5;
+        } else if (currentState.food) {
+          // 距离奖励
+          const newDistance =
+            Math.abs(currentState.headPosition.x - currentState.food.x) +
+            Math.abs(currentState.headPosition.y - currentState.food.y);
+          reward = newDistance < prevDistance ? 0.5 : -0.3;
+
+          // 存活奖励
+          reward += 0.1;
+        }
+
+        return {
+          reward: reward,
+          nextState: currentState.stateArray,
+          isDone: isDone,
+          score: game.score,
+        };
+      },
+      modelParams: {
+        learningRate: 0.0005,
+        hiddenUnits: 256,
+      },
+    });
+
+    // 设置游戏更新回调
+    game.onUpdate = (state) => {
+      game.render();
+      document.getElementById('currentScore').textContent = state.score;
+
+      if (state.isGameOver) {
+        game.renderGameOver();
+      }
+    };
+
+    // 更新训练进度
+    function updateTrainingProgress(
+      currentEpisode,
+      totalEpisodes,
+      currentScore,
+      highScore,
+      avgScore
+    ) {
+      const progress = Math.floor((currentEpisode / totalEpisodes) * 100);
+      document.getElementById('progressBar').style.width = `${progress}%`;
+      document.getElementById('progressBar').textContent = `${progress}%`;
+
+      document.getElementById(
+        'episodeCount'
+      ).textContent = `${currentEpisode}/${totalEpisodes}`;
+      document.getElementById('highScore').textContent = highScore;
+      document.getElementById('avgScore').textContent = avgScore.toFixed(1);
+    }
+
+    // 按钮事件
+    document.getElementById('manualBtn').addEventListener('click', () => {
+      game.stop();
+      ai.stopTraining();
+      game.reset();
+      game.start(200);
+      document.getElementById('status').textContent =
+        '手动模式 - 使用方向键控制';
+      document.getElementById('trainBtn').disabled = false;
+      document.getElementById('stopTrainBtn').disabled = true;
+    });
+
+    document.getElementById('aiBtn').addEventListener('click', async () => {
+      game.stop();
+      ai.stopTraining();
+      game.reset();
+      document.getElementById('status').textContent = 'AI模式运行中...';
+      document.getElementById('trainBtn').disabled = false;
+      document.getElementById('stopTrainBtn').disabled = true;
+
+      async function aiGameLoop() {
+        if (!game.getGameState().isGameOver) {
+          await ai.step();
+          setTimeout(aiGameLoop, 100);
+        } else {
+          document.getElementById('status').textContent = 'AI模式 - 游戏结束';
+        }
+      }
+
+      aiGameLoop();
+    });
+
+    document
+      .getElementById('trainBtn')
+      .addEventListener('click', async () => {
+        game.stop();
+        document.getElementById('status').textContent = 'AI训练开始...';
+        document.getElementById('trainBtn').disabled = true;
+        document.getElementById('stopTrainBtn').disabled = false;
+
+        // 重置进度条
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('progressBar').textContent = '0%';
+
+        // 定期执行内存清理
+        const memoryCleanupInterval = setInterval(() => {
+          tf.engine().startScope();
+          tf.engine().endScope();
+          tf.tidy(() => { });
+        }, 10000);
+
+        await ai.train({
+          episodes: 500,
+          batchSize: 128,
+          explorationRate: 0.5,
+          minExplorationRate: 0.1,
+          explorationDecay: 0.995,
+          discountFactor: 0.95,
+          maxStepsPerEpisode: 1000,
+          updateInterval: 10,
+        });
+
+        clearInterval(memoryCleanupInterval);
+        document.getElementById('trainBtn').disabled = false;
+        document.getElementById('stopTrainBtn').disabled = true;
+      });
+
+    document.getElementById('stopTrainBtn').addEventListener('click', () => {
+      ai.stopTraining();
+      document.getElementById('status').textContent = '训练已停止';
+      document.getElementById('trainBtn').disabled = false;
+      document.getElementById('stopTrainBtn').disabled = true;
+    });
+
+    // 初始化为手动模式
+    game.start();
+  </script>
+</body>
+
+</html>

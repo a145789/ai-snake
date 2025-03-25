@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TensorFlow.js AI贪吃蛇</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/3.18.0/tf.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f0f0f0;
+      padding: 20px;
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+    }
+
+    #game-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 20px;
+    }
+
+    canvas {
+      border: 2px solid #333;
+      background-color: #222;
+      margin-bottom: 20px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    button {
+      padding: 8px 16px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+
+    .stats {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 18px;
+    }
+
+    .stat {
+      margin: 5px 0;
+    }
+
+    .training-progress {
+      width: 400px;
+      height: 20px;
+      background-color: #eee;
+      border-radius: 4px;
+      margin: 10px 0;
+      position: relative;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background-color: #4CAF50;
+      border-radius: 4px;
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    .training-info {
+      margin-top: 10px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>TensorFlow.js AI贪吃蛇</h1>
+  <div id="game-container">
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+    <div class="controls">
+      <button id="startBtn">开始游戏</button>
+      <button id="trainBtn">训练AI</button>
+      <button id="aiPlayBtn" disabled>AI游玩</button>
+      <button id="stopBtn" disabled>停止</button>
+    </div>
+    <div class="training-progress">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+    <div class="training-info" id="trainingInfo"></div>
+    <div class="stats">
+      <div class="stat">当前分数: <span id="currentScore">0</span></div>
+      <div class="stat">最高分数: <span id="highScore">0</span></div>
+      <div class="stat">AI状态: <span id="aiStatus">未训练</span></div>
+      <div class="stat">训练代数: <span id="generation">0</span></div>
+      <div class="stat">平均得分: <span id="avgScore">0</span></div>
+    </div>
+  </div>
+
+  <script>
+    // 游戏常量
+    const GRID_SIZE = 20;
+    const CELL_SIZE = 20;
+    const CANVAS_SIZE = GRID_SIZE * CELL_SIZE;
+    const DIRECTIONS = {
+      UP: { x: 0, y: -1 },
+      DOWN: { x: 0, y: 1 },
+      LEFT: { x: -1, y: 0 },
+      RIGHT: { x: 1, y: 0 }
+    };
+
+    // 游戏元素
+    let snake = [];
+    let food = {};
+    let direction = DIRECTIONS.RIGHT;
+    let newDirection = DIRECTIONS.RIGHT;
+    let gameInterval = null;
+    let score = 0;
+    let highScore = 0;
+    let gameSpeed = 100;
+    let isAIPlaying = false;
+    let generation = 0;
+    let aiModel = null;
+    let gameHistory = [];
+    let currentGameStates = [];
+    let currentGameActions = [];
+    let totalGames = 0;
+    let epsilon = 1.0; // 探索率，初始为1（100%随机）
+
+    // 训练参数
+    const TRAINING_GAMES = 500; // 训练游戏总数
+    const BATCH_SIZE = 64; // 每批训练的样本数
+    const EPSILON_DECAY = 0.995; // 探索率衰减因子
+    const MIN_EPSILON = 0.01; // 最小探索率
+
+    // 记忆回放缓冲区
+    const replayBuffer = {
+      states: [],
+      actions: [],
+      rewards: [],
+      nextStates: [],
+      dones: [],
+      maxSize: 10000,
+
+      add(state, action, reward, nextState, done) {
+        if (this.states.length >= this.maxSize) {
+          this.states.shift();
+          this.actions.shift();
+          this.rewards.shift();
+          this.nextStates.shift();
+          this.dones.shift();
+        }
+
+        this.states.push(state);
+        this.actions.push(action);
+        this.rewards.push(reward);
+        this.nextStates.push(nextState);
+        this.dones.push(done);
+      },
+
+      size() {
+        return this.states.length;
+      },
+
+      sample(batchSize) {
+        const indices = [];
+        const bufferSize = this.size();
+
+        if (bufferSize < batchSize) {
+          return null;
+        }
+
+        // 随机采样
+        while (indices.length < batchSize) {
+          const index = Math.floor(Math.random() * bufferSize);
+          if (!indices.includes(index)) {
+            indices.push(index);
+          }
+        }
+
+        const batchStates = indices.map(i => this.states[i]);
+        const batchActions = indices.map(i => this.actions[i]);
+        const batchRewards = indices.map(i => this.rewards[i]);
+        const batchNextStates = indices.map(i => this.nextStates[i]);
+        const batchDones = indices.map(i => this.dones[i]);
+
+        return {
+          states: batchStates,
+          actions: batchActions,
+          rewards: batchRewards,
+          nextStates: batchNextStates,
+          dones: batchDones
+        };
+      }
+    };
+
+    // 获取DOM元素
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const trainBtn = document.getElementById('trainBtn');
+    const aiPlayBtn = document.getElementById('aiPlayBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const currentScoreEl = document.getElementById('currentScore');
+    const highScoreEl = document.getElementById('highScore');
+    const aiStatusEl = document.getElementById('aiStatus');
+    const generationEl = document.getElementById('generation');
+    const avgScoreEl = document.getElementById('avgScore');
+    const progressBar = document.getElementById('progressBar');
+    const trainingInfo = document.getElementById('trainingInfo');
+
+    // 初始化游戏
+    function initGame() {
+      // 初始化蛇
+      snake = [
+        { x: 10, y: 10 },
+        { x: 9, y: 10 },
+        { x: 8, y: 10 }
+      ];
+      // 生成食物
+      generateFood();
+      // 初始方向
+      direction = DIRECTIONS.RIGHT;
+      newDirection = DIRECTIONS.RIGHT;
+      // 初始分数
+      score = 0;
+      currentScoreEl.textContent = score;
+      // 清空当前游戏记录
+      currentGameStates = [];
+      currentGameActions = [];
+    }
+
+    // 生成食物
+    function generateFood() {
+      let foodX, foodY;
+      let foodOnSnake;
+
+      do {
+        foodOnSnake = false;
+        foodX = Math.floor(Math.random() * GRID_SIZE);
+        foodY = Math.floor(Math.random() * GRID_SIZE);
+
+        // 检查食物是否生成在蛇身上
+        for (let i = 0; i < snake.length; i++) {
+          if (snake[i].x === foodX && snake[i].y === foodY) {
+            foodOnSnake = true;
+            break;
+          }
+        }
+      } while (foodOnSnake);
+
+      food = { x: foodX, y: foodY };
+    }
+
+    // 绘制游戏界面
+    function drawGame() {
+      // 清空画布
+      ctx.fillStyle = '#222';
+      ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+      // 绘制蛇
+      ctx.fillStyle = '#4CAF50';
+      snake.forEach((segment, index) => {
+        if (index === 0) {
+          // 蛇头
+          ctx.fillStyle = '#8BC34A';
+        } else {
+          // 蛇身
+          ctx.fillStyle = '#4CAF50';
+        }
+        ctx.fillRect(segment.x * CELL_SIZE, segment.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+
+        // 为蛇身添加边框
+        ctx.strokeStyle = '#388E3C';
+        ctx.strokeRect(segment.x * CELL_SIZE, segment.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+      });
+
+      // 绘制食物
+      ctx.fillStyle = '#F44336';
+      ctx.beginPath();
+      const centerX = food.x * CELL_SIZE + CELL_SIZE / 2;
+      const centerY = food.y * CELL_SIZE + CELL_SIZE / 2;
+      const radius = CELL_SIZE / 2 * 0.8;
+      ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+
+    // 游戏更新
+    function updateGame() {
+      // 记录当前状态
+      const currentState = getStateInputs();
+
+      // 更新蛇的方向
+      const oldDirection = direction;
+      direction = newDirection;
+
+      // 计算蛇的新头部位置
+      const head = { ...snake[0] };
+      head.x += direction.x;
+      head.y += direction.y;
+
+      // 检查是否游戏结束
+      const gameOver = isGameOver(head);
+      let reward = -0.1; // 每步的小惩罚，鼓励蛇尽快找到食物
+
+      if (gameOver) {
+        reward = -10; // 游戏结束的大惩罚
+        if (isAIPlaying) {
+          // 记录最后一步的经验
+          const nextState = getStateInputs();
+          const actionIndex = getActionIndex(direction);
+
+          // 将经验添加到回放缓冲区
+          replayBuffer.add(
+            currentState,
+            actionIndex,
+            reward,
+            nextState,
+            true // done = true
+          );
+        }
+
+        handleGameOver();
+        return;
+      }
+
+      // 将新头部添加到蛇身
+      snake.unshift(head);
+
+      // 检查是否吃到食物
+      const ateFood = head.x === food.x && head.y === food.y;
+      if (ateFood) {
+        // 增加分数
+        score++;
+        currentScoreEl.textContent = score;
+        if (score > highScore) {
+          highScore = score;
+          highScoreEl.textContent = highScore;
+        }
+
+        // 生成新食物
+        generateFood();
+
+        // 吃到食物的大奖励
+        reward = 10;
+      } else {
+        // 如果没有吃到食物，移除蛇尾
+        snake.pop();
+
+        // 额外的奖励：接近食物
+        const oldDistance = manhattanDistance(snake[1], food);
+        const newDistance = manhattanDistance(head, food);
+        if (newDistance < oldDistance) {
+          reward += 0.1; // 靠近食物的小奖励
+        }
+      }
+
+      // 如果AI在玩，记录这一步的经验
+      if (isAIPlaying) {
+        const nextState = getStateInputs();
+        const actionIndex = getActionIndex(direction);
+
+        // 将经验添加到回放缓冲区
+        replayBuffer.add(
+          currentState,
+          actionIndex,
+          reward,
+          nextState,
+          false // done = false
+        );
+
+        // 获取下一步方向
+        predictNextMove();
+      }
+
+      // 重新绘制游戏
+      drawGame();
+    }
+
+    // 曼哈顿距离计算
+    function manhattanDistance(point1, point2) {
+      return Math.abs(point1.x - point2.x) + Math.abs(point1.y - point2.y);
+    }
+
+    // 将方向转换为索引
+    function getActionIndex(dir) {
+      if (dir === DIRECTIONS.UP) return 0;
+      if (dir === DIRECTIONS.RIGHT) return 1;
+      if (dir === DIRECTIONS.DOWN) return 2;
+      if (dir === DIRECTIONS.LEFT) return 3;
+      return 1; // 默认右方向
+    }
+
+    // 将索引转换为方向
+    function getDirectionFromIndex(index) {
+      switch (index) {
+        case 0: return DIRECTIONS.UP;
+        case 1: return DIRECTIONS.RIGHT;
+        case 2: return DIRECTIONS.DOWN;
+        case 3: return DIRECTIONS.LEFT;
+        default: return DIRECTIONS.RIGHT;
+      }
+    }
+
+    // 检查游戏是否结束
+    function isGameOver(head) {
+      // 检查是否撞墙
+      if (head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE) {
+        return true;
+      }
+
+      // 检查是否撞到自己
+      for (let i = 0; i < snake.length; i++) {
+        if (snake[i].x === head.x && snake[i].y === head.y) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    // 处理游戏结束
+    function handleGameOver() {
+      clearInterval(gameInterval);
+      gameInterval = null;
+
+      if (isAIPlaying) {
+        // 记录游戏数据用于训练
+        gameHistory.push({
+          score: score,
+          steps: score + snake.length // 简单的评估指标
+        });
+
+        totalGames++;
+
+        // 更新UI
+        const avgScore = gameHistory.reduce((sum, game) => sum + game.score, 0) / gameHistory.length;
+        avgScoreEl.textContent = avgScore.toFixed(2);
+        progressBar.style.width = `${(totalGames / TRAINING_GAMES * 100)}%`;
+        trainingInfo.textContent = `已完成: ${totalGames}/${TRAINING_GAMES} 游戏`;
+
+        // 进行批量训练
+        if (replayBuffer.size() >= BATCH_SIZE) {
+          trainModel();
+        }
+
+        // 更新探索率
+        epsilon = Math.max(MIN_EPSILON, epsilon * EPSILON_DECAY);
+
+        // 如果还在训练中，开始新游戏
+        if (totalGames < TRAINING_GAMES) {
+          setTimeout(() => {
+            initGame();
+            gameInterval = setInterval(updateGame, 10); // 训练时速度更快
+          }, 50);
+        } else {
+          // 训练结束
+          isAIPlaying = false;
+          aiStatusEl.textContent = "训练完成";
+          startBtn.disabled = false;
+          trainBtn.disabled = false;
+          aiPlayBtn.disabled = false;
+          stopBtn.disabled = true;
+          trainingInfo.textContent = "训练已完成！";
+        }
+      } else {
+        alert(`游戏结束！你的得分是: ${score}`);
+        startBtn.disabled = false;
+        trainBtn.disabled = false;
+        stopBtn.disabled = true;
+        if (aiModel) {
+          aiPlayBtn.disabled = false;
+        }
+      }
+    }
+
+    // 键盘控制
+    document.addEventListener('keydown', (e) => {
+      if (isAIPlaying) return; // 如果AI在玩，忽略键盘输入
+
+      switch (e.key) {
+        case 'ArrowUp':
+          if (direction !== DIRECTIONS.DOWN) {
+            newDirection = DIRECTIONS.UP;
+          }
+          break;
+        case 'ArrowDown':
+          if (direction !== DIRECTIONS.UP) {
+            newDirection = DIRECTIONS.DOWN;
+          }
+          break;
+        case 'ArrowLeft':
+          if (direction !== DIRECTIONS.RIGHT) {
+            newDirection = DIRECTIONS.LEFT;
+          }
+          break;
+        case 'ArrowRight':
+          if (direction !== DIRECTIONS.LEFT) {
+            newDirection = DIRECTIONS.RIGHT;
+          }
+          break;
+      }
+    });
+
+    // 开始游戏按钮
+    startBtn.addEventListener('click', () => {
+      if (gameInterval) {
+        clearInterval(gameInterval);
+      }
+      isAIPlaying = false;
+      initGame();
+      gameInterval = setInterval(updateGame, gameSpeed);
+
+      startBtn.disabled = true;
+      trainBtn.disabled = true;
+      aiPlayBtn.disabled = true;
+      stopBtn.disabled = false;
+    });
+
+    // 停止游戏按钮
+    stopBtn.addEventListener('click', () => {
+      if (gameInterval) {
+        clearInterval(gameInterval);
+        gameInterval = null;
+      }
+      isAIPlaying = false;
+
+      startBtn.disabled = false;
+      trainBtn.disabled = false;
+      stopBtn.disabled = true;
+      if (aiModel) {
+        aiPlayBtn.disabled = false;
+      }
+    });
+
+    // AI部分 - TensorFlow.js实现
+
+    // 获取游戏状态输入特征
+    function getStateInputs() {
+      const head = snake[0];
+
+      // 特征1-4: 四个方向是否有危险（墙壁或蛇身）
+      const dangerUp = isDanger({ x: head.x, y: head.y - 1 });
+      const dangerRight = isDanger({ x: head.x + 1, y: head.y });
+      const dangerDown = isDanger({ x: head.x, y: head.y + 1 });
+      const dangerLeft = isDanger({ x: head.x - 1, y: head.y });
+
+      // 特征5-8: 食物相对于蛇头的方向
+      const foodUp = food.y < head.y;
+      const foodRight = food.x > head.x;
+      const foodDown = food.y > head.y;
+      const foodLeft = food.x < head.x;
+
+      // 特征9-12: 当前移动方向
+      const movingUp = direction === DIRECTIONS.UP;
+      const movingRight = direction === DIRECTIONS.RIGHT;
+      const movingDown = direction === DIRECTIONS.DOWN;
+      const movingLeft = direction === DIRECTIONS.LEFT;
+
+      // 添加更多特征
+      // 特征13-16: 食物到蛇头的相对距离
+      const foodDistX = food.x - head.x;
+      const foodDistY = food.y - head.y;
+      const foodDist = Math.sqrt(foodDistX * foodDistX + foodDistY * foodDistY) / GRID_SIZE;
+
+      // 特征17: 蛇的长度与棋盘大小的比率
+      const snakeLengthRatio = snake.length / (GRID_SIZE * GRID_SIZE);
+
+      // 返回包含所有特征的数组
+      return [
+        dangerUp ? 1 : 0,
+        dangerRight ? 1 : 0,
+        dangerDown ? 1 : 0,
+        dangerLeft ? 1 : 0,
+        foodUp ? 1 : 0,
+        foodRight ? 1 : 0,
+        foodDown ? 1 : 0,
+        foodLeft ? 1 : 0,
+        movingUp ? 1 : 0,
+        movingRight ? 1 : 0,
+        movingDown ? 1 : 0,
+        movingLeft ? 1 : 0,
+        foodDistX / GRID_SIZE, // 归一化
+        foodDistY / GRID_SIZE, // 归一化
+        foodDist,
+        snakeLengthRatio
+      ];
+    }
+
+    // 检查位置是否有危险
+    function isDanger(position) {
+      // 检查是否超出边界
+      if (position.x < 0 || position.x >= GRID_SIZE || position.y < 0 || position.y >= GRID_SIZE) {
+        return true;
+      }
+
+      // 检查是否撞到蛇身
+      for (let i = 0; i < snake.length; i++) {
+        if (snake[i].x === position.x && snake[i].y === position.y) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    // 创建神经网络模型
+    function createModel() {
+      const model = tf.sequential();
+
+      // 输入层 (16个特征)
+      model.add(tf.layers.dense({
+        units: 32,
+        activation: 'relu',
+        inputShape: [16]
+      }));
+
+      // 隐藏层
+      model.add(tf.layers.dense({
+        units: 24,
+        activation: 'relu'
+      }));
+
+      model.add(tf.layers.dense({
+        units: 16,
+        activation: 'relu'
+      }));
+
+      // 输出层 (4个方向的Q值)
+      model.add(tf.layers.dense({
+        units: 4,
+        activation: 'linear' // Q值学习使用线性激活函数
+      }));
+
+      // 编译模型
+      model.compile({
+        optimizer: tf.train.adam(0.001),
+        loss: 'meanSquaredError' // Q值学习使用均方误差
+      });
+
+      return model;
+    }
+
+    // 训练模型按钮
+    trainBtn.addEventListener('click', async () => {
+      aiStatusEl.textContent = "训练中...";
+      startBtn.disabled = true;
+      trainBtn.disabled = true;
+      aiPlayBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      // 创建模型
+      if (!aiModel) {
+        aiModel = createModel();
+      }
+
+      // 重置训练状态
+      gameHistory = [];
+      totalGames = 0;
+      epsilon = 1.0;
+      progressBar.style.width = "0%";
+      trainingInfo.textContent = `已完成: 0/${TRAINING_GAMES} 游戏`;
+
+      // 开始训练
+      isAIPlaying = true;
+      generation++;
+      generationEl.textContent = generation;
+
+      initGame();
+      gameInterval = setInterval(updateGame, 10); // 训练时速度更快
+    });
+
+    // 训练模型
+    async function trainModel() {
+      // 从回放缓冲区采样
+      const batch = replayBuffer.sample(BATCH_SIZE);
+      if (!batch) return;
+
+      // 转换为张量
+      const stateTensor = tf.tensor2d(batch.states);
+      const nextStateTensor = tf.tensor2d(batch.nextStates);
+
+      // 计算目标Q值
+      const targetQs = await tf.tidy(() => {
+        // 预测当前状态的Q值
+        const currentQs = aiModel.predict(stateTensor);
+
+        // 预测下一状态的Q值
+        const nextQs = aiModel.predict(nextStateTensor);
+
+        // 将Q值转换为JavaScript数组
+        return tf.tensor2d(
+          batch.rewards.map((reward, i) => {
+            const done = batch.dones[i];
+            const actionIndex = batch.actions[i];
+
+            // 当前Q值的副本
+            const currentQ = currentQs.arraySync()[i];
+
+            if (done) {
+              // 如果游戏结束，目标Q值就是奖励
+              currentQ[actionIndex] = reward;
+            } else {
+              // 否则，Q(s,a) = r + γ * max(Q(s',a'))
+              const nextQ = nextQs.arraySync()[i];
+              const maxNextQ = Math.max(...nextQ);
+              const gamma = 0.95; // 折扣因子
+
+              currentQ[actionIndex] = reward + gamma * maxNextQ;
+            }
+
+            return currentQ;
+          })
+        );
+      });
+
+      // 训练模型
+      await aiModel.fit(stateTensor, targetQs, {
+        epochs: 1,
+        verbose: 0
+      });
+
+      // 释放张量
+      stateTensor.dispose();
+      nextStateTensor.dispose();
+      targetQs.dispose();
+    }
+
+    // AI预测下一步
+    function predictNextMove() {
+      // 获取当前状态
+      const state = getStateInputs();
+
+      // 使用模型预测
+      tf.tidy(() => {
+        // 探索-利用平衡
+        if (Math.random() < epsilon) {
+          // 探索：随机选择一个合法动作
+          const legalDirections = [];
+
+          if (direction !== DIRECTIONS.DOWN) legalDirections.push(DIRECTIONS.UP);
+          if (direction !== DIRECTIONS.LEFT) legalDirections.push(DIRECTIONS.RIGHT);
+          if (direction !== DIRECTIONS.UP) legalDirections.push(DIRECTIONS.DOWN);
+          if (direction !== DIRECTIONS.RIGHT) legalDirections.push(DIRECTIONS.LEFT);
+
+          const randomIndex = Math.floor(Math.random() * legalDirections.length);
+          newDirection = legalDirections[randomIndex];
+        } else {
+          // 利用：选择Q值最高的动作
+          const stateTensor = tf.tensor2d([state]);
+          const prediction = aiModel.predict(stateTensor);
+          const qValues = prediction.dataSync();
+
+          // 找出合法动作中Q值最高的
+          let maxIndex = 0;
+          let maxValue = -Infinity;
+
+          // 检查每个方向
+          for (let i = 0; i < 4; i++) {
+            const selectedDirection = getDirectionFromIndex(i);
+
+            // 检查是否是合法动作（不能朝反方向走）
+            if ((direction === DIRECTIONS.UP && selectedDirection === DIRECTIONS.DOWN) ||
+              (direction === DIRECTIONS.DOWN && selectedDirection === DIRECTIONS.UP) ||
+              (direction === DIRECTIONS.LEFT && selectedDirection === DIRECTIONS.RIGHT) ||
+              (direction === DIRECTIONS.RIGHT && selectedDirection === DIRECTIONS.LEFT)) {
+              continue;
+            }
+
+            if (qValues[i] > maxValue) {
+              maxValue = qValues[i];
+              maxIndex = i;
+            }
+          }
+
+          newDirection = getDirectionFromIndex(maxIndex);
+        }
+      });
+    }
+
+    // AI游玩按钮
+    aiPlayBtn.addEventListener('click', () => {
+      if (!aiModel) {
+        alert('请先训练AI！');
+        return;
+      }
+
+      aiStatusEl.textContent = "AI游玩中";
+      isAIPlaying = true;
+      epsilon = 0; // 游玩时不使用探索
+      initGame();
+      gameInterval = setInterval(updateGame, 150);
+
+      startBtn.disabled = true;
+      trainBtn.disabled = true;
+      aiPlayBtn.disabled = true;
+      stopBtn.disabled = false;
+    });
+
+    // 初始绘制游戏
+    initGame();
+    drawGame();
+  </script>
+</body>
+
+</html>
